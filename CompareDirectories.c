@@ -8,20 +8,11 @@
 #include <syslog.h>
 #include <ctype.h>
 #include <signal.h>
+#include <time.h>
 
 int sleep_time_sec = 300;
 int recursion_flag = 0;
 int sigusr1_flag = 0;
-
-int is_dir(char* path){
-    DIR *directory;
-
-    if( (directory = opendir(path)) == 0 ){
-        return 0;
-    }
-    closedir(directory);
-    return 1;
-}
 
 int copy(char *source, char *dest)
 {
@@ -76,7 +67,14 @@ time_t file_modified_time(const char* path){
 
 void signal_handler(int signum){
     if(signum == SIGUSR1){
-        syslog(LOG_NOTICE, "wybudzenie demona po otrzymaniu sygnału SIGUSR1");
+
+        time_t now;
+        struct tm * timeinfo;
+        time ( &now );
+        timeinfo = localtime ( &now );
+
+        syslog(LOG_NOTICE, "%s: wybudzenie demona po otrzymaniu sygnału SIGUSR1", asctime(timeinfo));
+
         sigusr1_flag = 1;
     }
 }
@@ -97,19 +95,18 @@ int remove_directory(const char *path)
     DIR *d = opendir(path);
     size_t path_len = strlen(path);
     int r = -1;
-    if (d)
+    if (d)      //Jeżeli otwieranie katalogu zakończy się powodzeniem
     {
         struct dirent *p;
         r = 0;
 
-        while (!r && (p=readdir(d)))
+        while (!r && (p=readdir(d)))    //Czytanie po katalogu
         {
             int r2 = -1;
             char *buf;
             size_t len;
 
-            /* Skip the names "." and ".." as we don't want to recurse on them. */
-            if (!strcmp(p->d_name, ".") || !strcmp(p->d_name, ".."))
+            if (!strcmp(p->d_name, ".") || !strcmp(p->d_name, ".."))    //Pomijamy dowiązania symboliczne
             {
                 continue;
             }
@@ -117,25 +114,39 @@ int remove_directory(const char *path)
             len = path_len + strlen(p->d_name) + 2;
             buf = malloc(len);
 
-            if (buf)
+            if (buf)    //Jeżeli alokowanie pamięci zakończy się powodzeniem
             {
                 struct stat statbuf;
 
-                snprintf(buf, len, "%s/%s", path, p->d_name);
+                snprintf(buf, len, "%s/%s", path, p->d_name);   //Stworzenie ścieżki do odczytanego pliku
 
                 if (!stat(buf, &statbuf))
                 {
-                    if (S_ISDIR(statbuf.st_mode))
+                    if (S_ISDIR(statbuf.st_mode))       //Jeśli odczytany plik jest katalogiem
                     {
                         r2 = remove_directory(buf);
+
+                        time_t now;
+                        struct tm * timeinfo;
+                        time ( &now );
+                        timeinfo = localtime ( &now );
+
+                        syslog(LOG_NOTICE, "%s: usunięto katalog %s", asctime(timeinfo), buf);
                     }
                     else
                     {
-                        r2 = unlink(buf);
+                        r2 = unlink(buf);       //Usunięcie pojedynczego pliku
+
+                        time_t now;
+                        struct tm * timeinfo;
+                        time ( &now );
+                        timeinfo = localtime ( &now );
+
+                        syslog(LOG_NOTICE, "%s: usunięto plik %s", asctime(timeinfo), buf);
                     }
                 }
 
-                free(buf);
+                free(buf);      //Zwolnienie pamięci zaalokowanej przez bufor
             }
 
             r = r2;
@@ -144,9 +155,9 @@ int remove_directory(const char *path)
         closedir(d);
     }
 
-    if (!r)
+    if (!r)     //Jeżeli usuwanie plików z katalogu zakończy się powodzeniem (funkcja remove_directory zwróci 0)
     {
-        r = rmdir(path);
+        r = rmdir(path);    //Usunięcie pustego katalogu
     }
 
     return r;
@@ -158,14 +169,12 @@ void synchronization(char* path1, char* path2){
 
     struct  dirent* src_ent;
 
-    /* PORÓWNYWANIE KATALOGÓW */
+
     while( (src_ent = readdir(src_dir)) != NULL){
 
         if(recursion_flag == 1){
 
             if(src_ent->d_type == DT_DIR && strcmp(src_ent->d_name, ".") != 0 && strcmp(src_ent->d_name, "..") != 0 ){
-
-                syslog(LOG_NOTICE, "znaleziono podkatalog w katalogu źróðłowym: %s", src_ent->d_name);
 
                 char src_path[1024];
                 snprintf(src_path, 1024,"%s/%s",path1, src_ent->d_name);
@@ -174,9 +183,18 @@ void synchronization(char* path1, char* path2){
                 snprintf(dest_path, 1024,"%s/%s",path2, src_ent->d_name);
 
                 if( !dir_exist(dest_path)){
-                    syslog(LOG_NOTICE, "tworzenie katalogu %s", dest_path);
+
                     mkdir(dest_path, 0777);
+
+                    time_t now;
+                    struct tm * timeinfo;
+                    time ( &now );
+                    timeinfo = localtime ( &now );
+
+                    syslog(LOG_NOTICE, "%s: stworzono katalog %s", asctime(timeinfo), dest_path);
+
                 }
+
                 synchronization(src_path, dest_path);
             }
         }
@@ -190,11 +208,26 @@ void synchronization(char* path1, char* path2){
             snprintf(dest_path, 1024,"%s/%s",path2, src_ent->d_name);
 
             if( !fileexist(dest_path) ){    //Sprawdzenie, czy jest taki plik w katalogu docelowym
+
                 copy(src_path, dest_path);
-                syslog(LOG_NOTICE, "skopiowano plik %s", src_path);
+
+                time_t now;
+                struct tm * timeinfo;
+                time ( &now );
+                timeinfo = localtime ( &now );
+
+                syslog(LOG_NOTICE, "%s: skopiowano plik %s", asctime(timeinfo), src_path);
+
             } else if( file_modified_time(src_path) > file_modified_time(dest_path) ){
+
                 copy(src_path, dest_path);   //Kiedy plik istnieje w obu katalogach, ale plik w katalogu źróðłowym ma późniejszą datę modyfikacji
-                syslog(LOG_NOTICE, "zaktualizowano plik %s", src_path);
+
+                time_t now;
+                struct tm * timeinfo;
+                time ( &now );
+                timeinfo = localtime ( &now );
+
+                syslog(LOG_NOTICE, "%s: zaktualizowano plik %s", asctime(timeinfo),src_path);
             }
 
         }
@@ -218,8 +251,15 @@ void synchronization(char* path1, char* path2){
                 snprintf(dest_path, 1024,"%s/%s",path2, dest_ent->d_name);
 
                 if( !dir_exist(src_path)){     //Sprawdzenie, czy jest taki podkatalog w katalogu źródłowym
-                    syslog(LOG_NOTICE, "usuwanie katalogu %s", dest_path);
+
                     remove_directory(dest_path);
+
+                    time_t now;
+                    struct tm * timeinfo;
+                    time ( &now );
+                    timeinfo = localtime ( &now );
+
+                    syslog(LOG_NOTICE, "%s: usunięto katalog %s", asctime(timeinfo), dest_path);
                 }
             }
         }
@@ -232,12 +272,16 @@ void synchronization(char* path1, char* path2){
             char src_path[1024];
             snprintf(src_path, 1024,"%s/%s",path1, dest_ent->d_name);
 
-            if(dest_ent->d_type == DT_REG){
+            if( !fileexist(src_path)){      //Sprawdzenie, czy jest taki plik w katalogu źróðłowym
 
-                if( !fileexist(src_path)){      //Sprawdzenie, czy jest taki plik w katalogu źróðłowym
-                    unlink(dest_path);       //Usunięcie pliku
-                    syslog(LOG_NOTICE, "usunięto plik %s", dest_path);
-                }
+                unlink(dest_path);       //Usunięcie pliku
+
+                time_t now;
+                struct tm * timeinfo;
+                time ( &now );
+                timeinfo = localtime ( &now );
+
+                syslog(LOG_NOTICE, "%s: usunięto plik %s", asctime(timeinfo), dest_path);
             }
         }
 
@@ -248,19 +292,25 @@ void synchronization(char* path1, char* path2){
 
 int main(int argc, char* argv[]) {
 
-    setlogmask(LOG_UPTO(LOG_NOTICE));   //Ustawienie maski logu
-    syslog(LOG_NOTICE,"program uruchomiony przez użytkownika %d", getuid());
-
     char path1[1024], path2[1024];
     strcpy(path1, argv[1]);
     strcpy(path2, argv[2]);
 
-    if( is_dir(path1) && is_dir(path2) ){
+    if( dir_exist(path1) && dir_exist(path2) ){
+
+        setlogmask(LOG_UPTO(LOG_NOTICE));   //Ustawienie maski logu
+
+        time_t now;
+        struct tm * timeinfo;
+        time ( &now );
+        timeinfo = localtime ( &now );
+
+        syslog(LOG_NOTICE, "%s: program uruchomiony przez użytkownika %d", asctime(timeinfo), getuid());
 
         // Id procesu, id sesji
         __pid_t  pid, sid;
 
-        /* Fork off the parent process */
+        //Stworzenie procesu potomnego
         pid = fork();
 
         int c;
@@ -278,42 +328,58 @@ int main(int argc, char* argv[]) {
             }
         }
 
-
-        /* Fork off the parent process */
-        if(pid < 0){    //W przypadku niepowodzenia
+        /* OPUSZCZENIE PROCESU, KTÓRY STWORZYŁ PROCES POTOMNY */
+        if(pid < 0){    //Jeżeli nie udało się uzyskać id procesu
             exit(EXIT_FAILURE);
         }
 
-        if(pid > 0){    //W przypadku powodzenia
-            syslog(LOG_NOTICE, "program stał się demonem");
+        if(pid > 0){    //Jeżeli udało się uzyskać id procesu
+
+            time_t now;
+            struct tm * timeinfo;
+            time ( &now );
+            timeinfo = localtime ( &now );
+
+            syslog(LOG_NOTICE, "%s: program stał się demonem", asctime(timeinfo));
             exit(EXIT_SUCCESS);
         }
 
-        /* Change the file mode mask */
+        //Ustawienie maski do tworzenia plików
         umask(0);
 
-        /* Create a new SID for the child process */
+        //Uzyskanie id sesji
         sid = setsid();
 
-        if(sid < 0){    //W przypadku niepowodzenia
+        if(sid < 0){    //Jeżeli nie uda się uzyskać id sesji
             exit(EXIT_FAILURE);
         }
 
-        /* Change the current working directory */
-        if(chdir("/") < 0){     //W przypadku niepowodzenia
+        //Zmiana katalogu, w którym pracuje demon
+        if(chdir("/") < 0){     //Jeżeli nie uda się odnaleźć podanej ścieżki
             exit(EXIT_FAILURE);
         }
 
-        signal(SIGUSR1, signal_handler);      //Przechwytywanie sygnału SIGUSR1
+        signal(SIGUSR1, signal_handler);      //Powiązanie sygnału SIGUSR1 ze zdefiniowanym handlerem
 
         while (1){
 
             sigusr1_flag = 0;
 
-            syslog(LOG_NOTICE, "demon przechodzi w stan uśpienia");
+            time_t now;
+            struct tm * timeinfo;
+            time ( &now );
+            timeinfo = localtime ( &now );
+
+            syslog(LOG_NOTICE, "%s: demon przechodzi w stan uśpienia", asctime(timeinfo));
             sleep(sleep_time_sec);
             if( !sigusr1_flag){
-                syslog(LOG_NOTICE, "naturalne wybudzenie demona");
+
+                time_t now;
+                struct tm * timeinfo;
+                time ( &now );
+                timeinfo = localtime ( &now );
+
+                syslog(LOG_NOTICE, "%s: naturalne wybudzenie demona", asctime(timeinfo));
             }
 
             synchronization(path1, path2);
